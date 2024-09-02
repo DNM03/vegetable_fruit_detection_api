@@ -1,9 +1,6 @@
+from ultralytics import YOLO
 from flask import Flask, request, jsonify
 import numpy as np
-import tensorflow as tf
-import cv2
-from PIL import Image
-import io
 import os
 from dotenv import load_dotenv
 
@@ -11,17 +8,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-model_path = os.getenv('MODEL_PATH', './model/trained_model_upgrade.h5')
-cnn = tf.keras.models.load_model(model_path)
-
-test_class_names = ['apple', 'banana', 'beetroot', 'bell pepper', 'cabbage', 'capsicum', 'carrot', 'cauliflower', 'chilli pepper', 'corn', 'cucumber', 'eggplant', 'garlic', 'ginger', 'grapes', 'jalepeno', 'kiwi', 'lemon', 'lettuce', 'mango', 'onion', 'orange', 'paprika', 'pear', 'peas', 'pineapple', 'pomegranate', 'potato', 'raddish', 'soy beans', 'spinach', 'sweetcorn', 'sweetpotato', 'tomato', 'turnip', 'watermelon']
-
-def preprocess_image(image):
-    img = Image.open(io.BytesIO(image))
-    img = img.resize((64, 64))  # Resize to the target size expected by the model
-    img_array = tf.keras.preprocessing.image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)  # Convert to batch format
-    return img_array
+model = YOLO(os.getenv('MODEL_PATH', './model/last.pt'))
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -32,18 +19,38 @@ def predict():
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
     
-    # Read and preprocess the image
-    image_bytes = file.read()
-    input_arr = preprocess_image(image_bytes)
+    # Save the uploaded image temporarily
+    file_path = os.path.join('temp', file.filename)
+    file.save(file_path)
     
-    # Make prediction
-    predictions = cnn.predict(input_arr)
-    predicted_index = np.argmax(predictions[0])
-    predicted_class = test_class_names[predicted_index]
-    
-    # Return the result
-    return jsonify({"predicted_class": predicted_class, "confidence": float(predictions[0][predicted_index])})
+    try:
+    # Perform prediction using the YOLO model
+        results = model(file_path)
+
+    # Extract class names and probabilities
+        names_dict = results[0].names  # Class names
+        probs = results[0].probs.data.tolist()  # Probabilities
+
+    # Find the class with the highest probability
+        predicted_index = np.argmax(probs)
+        predicted_class = names_dict[predicted_index]
+        predicted_prob = probs[predicted_index]
+
+    # Return the result as JSON
+        return jsonify({
+            "predicted_class": predicted_class,
+            "predicted_prob": predicted_prob
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": e}), 500
+
+    finally:
+        # Clean up the saved file after prediction
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 # Run the app
 if __name__ == '__main__':
-    app.run()
+    os.makedirs('temp', exist_ok=True)
+    app.run(host='0.0.0.0', port=5000)
